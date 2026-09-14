@@ -38,9 +38,13 @@ namespace ScalePlugin
         private const int HiddenRowHeight       = 0;
         private const int VisibleRowHeight      = 48;
 
+        // === Поля формы ===
         private Document doc;
         private Database db;
         private Editor ed;
+
+        // Захваченный набор объектов (Pickfirst на момент открытия формы)
+        private ObjectId[] preselectedIds;
 
         public static string NewNameOfBblocksLayer = "1ЭП_Оформление";
 
@@ -50,10 +54,28 @@ namespace ScalePlugin
             db = doc.Database;
             ed = doc.Editor;
 
+            // Захватываем Pickfirst ДО того, как форма получит фокус.
+            preselectedIds = GetImpliedSelectionIds();
+
             InitializeComponent();
 
             this.KeyPreview = true;
             this.KeyDown += Form_KeyDown;
+        }
+
+        /// <summary>
+        /// Возвращает ObjectId[] из текущего Pickfirst либо null.
+        /// </summary>
+        private static ObjectId[] GetImpliedSelectionIds()
+        {
+            Document doc = AcAp.DocumentManager.MdiActiveDocument;
+            if (doc == null) return null;
+
+            PromptSelectionResult sel = doc.Editor.SelectImplied();
+            if (sel.Status == PromptStatus.OK && sel.Value != null && sel.Value.Count > 0)
+                return sel.Value.GetObjectIds();
+
+            return null;
         }
 
         private void InitializeComponent()
@@ -284,6 +306,12 @@ namespace ScalePlugin
             if (!TryGetScaleFromUI(out double factor))
                 return;
 
+            // Если пользователь ничего не выбрал до открытия формы —
+            // попробуем захватить выбор ещё раз (на случай, если форма
+            // открыта немодально и выбор сделали только что).
+            if (preselectedIds == null || preselectedIds.Length == 0)
+                preselectedIds = GetImpliedSelectionIds();
+
             this.Hide();
             try
             {
@@ -292,10 +320,14 @@ namespace ScalePlugin
                     textBox1.Text,
                     chkDimensions.Checked,
                     chkMLeaders.Checked,
-                    chkBlocks.Checked);
+                    chkBlocks.Checked,
+                    preselectedIds);   // ← прокидываем захваченный набор
             }
             finally
             {
+                // После применения масштаба набор уже неактуален.
+                preselectedIds = null;
+
                 this.Show();
 
                 BeginInvoke(new Action(() =>

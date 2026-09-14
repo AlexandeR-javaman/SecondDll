@@ -62,12 +62,17 @@ namespace ScalePlugin
         /// <param name="applyToDimensions">Обрабатывать размеры (Dimscale).</param>
         /// <param name="applyToMLeaders">Обрабатывать мультивыноски (Scale).</param>
         /// <param name="applyToBlocks">Обрабатывать блоки на заданном слое.</param>
+        /// <param name="preselectedIds">
+        /// Объекты, заранее выбранные пользователем до открытия формы.
+        /// Если null или пусто — используется Pickfirst / интерактивный выбор.
+        /// </param>
         public static void Run(
             double scaleFactor,
             string blockLayer,
             bool applyToDimensions,
             bool applyToMLeaders,
-            bool applyToBlocks)
+            bool applyToBlocks,
+            ObjectId[] preselectedIds = null)
         {
             Document doc = AcAp.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
@@ -76,19 +81,32 @@ namespace ScalePlugin
             if (string.IsNullOrEmpty(blockLayer))
                 blockLayer = "1ЭП_Оформление";
 
-            // 1. Получаем набор объектов: сначала из Pickfirst, затем предлагаем выбрать.
-            PromptSelectionResult sel = ed.SelectImplied();
-            if (sel.Status != PromptStatus.OK || sel.Value == null || sel.Value.Count == 0)
-            {
-                PromptSelectionOptions pso = new PromptSelectionOptions();
-                pso.MessageForAdding = "\nВыберите объекты для обработки: ";
-                sel = ed.GetSelection(pso);
-            }
+            // 1. Получаем набор объектов:
+            //    а) заранее переданный из формы (Pickfirst, зафиксированный до показа формы);
+            //    б) текущий Pickfirst;
+            //    в) интерактивный выбор.
+            ObjectId[] ids = preselectedIds;
 
-            if (sel.Status != PromptStatus.OK || sel.Value == null || sel.Value.Count == 0)
+            if (ids == null || ids.Length == 0)
             {
-                ed.WriteMessage("\nНет выбранных объектов.");
-                return;
+                PromptSelectionResult sel = ed.SelectImplied();
+                if (sel.Status == PromptStatus.OK && sel.Value != null && sel.Value.Count > 0)
+                {
+                    ids = sel.Value.GetObjectIds();
+                }
+                else
+                {
+                    PromptSelectionOptions pso = new PromptSelectionOptions();
+                    pso.MessageForAdding = "\nВыберите объекты для обработки: ";
+                    sel = ed.GetSelection(pso);
+
+                    if (sel.Status != PromptStatus.OK || sel.Value == null || sel.Value.Count == 0)
+                    {
+                        ed.WriteMessage("\nНет выбранных объектов.");
+                        return;
+                    }
+                    ids = sel.Value.GetObjectIds();
+                }
             }
 
             int count = 0;
@@ -96,24 +114,22 @@ namespace ScalePlugin
             using (doc.LockDocument())
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
-                foreach (SelectedObject so in sel.Value)
+                foreach (ObjectId id in ids)
                 {
-                    if (so == null) continue;
+                    if (id.IsNull || id.IsErased) continue;
 
-                    Entity ent = tr.GetObject(so.ObjectId, OpenMode.ForWrite) as Entity;
+                    Entity ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
                     if (ent == null) continue;
 
                     if (ent is Dimension dim)
                     {
                         if (!applyToDimensions) continue;
-
                         dim.Dimscale = scaleFactor;
                         count++;
                     }
                     else if (ent is MLeader mld)
                     {
                         if (!applyToMLeaders) continue;
-
                         mld.Scale = scaleFactor;
                         count++;
                     }
@@ -133,6 +149,7 @@ namespace ScalePlugin
                 tr.Commit();
             }
 
+            // Снимаем Pickfirst (уже неактуален).
             ed.SetImpliedSelection(new ObjectId[0]);
             ed.WriteMessage($"\nОбработано объектов: {count}");
             ed.Regen();
