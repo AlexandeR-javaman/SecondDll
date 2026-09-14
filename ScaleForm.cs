@@ -46,6 +46,23 @@ namespace ScalePlugin
         // Захваченный набор объектов (Pickfirst на момент открытия формы)
         private ObjectId[] preselectedIds;
 
+        public MenuScaleForm(ObjectId[] preselected = null)
+        {
+            doc = AcAp.DocumentManager.MdiActiveDocument;
+            db  = doc.Database;
+            ed  = doc.Editor;
+
+            // Набор, зафиксированный командой до показа формы.
+            preselectedIds = (preselected != null && preselected.Length > 0)
+                ? preselected
+                : null;
+
+            InitializeComponent();
+
+            this.KeyPreview = true;
+            this.KeyDown += Form_KeyDown;
+        }
+
         public static string NewNameOfBblocksLayer = "1ЭП_Оформление";
 
         public MenuScaleForm()
