@@ -1,9 +1,10 @@
 ﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
-using Autodesk.AutoCAD.Geometry; // .NET API, в дальнейшем поменял на COM API для корректного изменения масштаба блоков с атрибутами
 using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
 
 namespace ScalePlugin
@@ -11,15 +12,23 @@ namespace ScalePlugin
     public static class SetScaleForSelection
     {
         /// <summary>
-        /// Разбор строки вида "1:100" → 100.0 ; "2:1" → 0.5.
+        /// Разбор строки вида "1:100" → 100.0
+        /// "2:1" → 0.5
         /// </summary>
         public static double ParseScaleFactor(string scaleText)
         {
             string[] parts = scaleText.Split(':');
-            if (parts.Length != 2) return 1.0;
 
-            double denom = double.Parse(parts[0].Replace('.', ','), CultureInfo.InvariantCulture);
-            double num = double.Parse(parts[1].Replace('.', ','), CultureInfo.InvariantCulture);
+            if (parts.Length != 2)
+                return 1.0;
+
+            double denom = double.Parse(
+                parts[0].Replace('.', ','),
+                CultureInfo.InvariantCulture);
+
+            double num = double.Parse(
+                parts[1].Replace('.', ','),
+                CultureInfo.InvariantCulture);
 
             return num / denom;
         }
@@ -29,43 +38,69 @@ namespace ScalePlugin
         /// </summary>
         public static string PickBlockLayer()
         {
-            Document doc = AcAp.DocumentManager.MdiActiveDocument;
+            Document doc =
+                AcAp.DocumentManager.MdiActiveDocument;
+
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
-            PromptEntityOptions opt = new PromptEntityOptions("\nВыберите блок на слое оформления: ");
-            opt.SetRejectMessage("\nЭто не блок. Попробуйте снова.");
-            opt.AddAllowedClass(typeof(BlockReference), true);
+            PromptEntityOptions opt =
+                new PromptEntityOptions(
+                    "\nВыберите блок на слое оформления: ");
 
-            PromptEntityResult res = ed.GetEntity(opt);
-            if (res.Status != PromptStatus.OK) return null;
+            opt.SetRejectMessage(
+                "\nЭто не блок. Попробуйте снова.");
 
-            using (Transaction tr = db.TransactionManager.StartTransaction())
+            opt.AddAllowedClass(
+                typeof(BlockReference),
+                true);
+
+            PromptEntityResult res =
+                ed.GetEntity(opt);
+
+            if (res.Status != PromptStatus.OK)
+                return null;
+
+            using (Transaction tr =
+                   db.TransactionManager.StartTransaction())
             {
-                BlockReference br = tr.GetObject(res.ObjectId, OpenMode.ForRead) as BlockReference;
+                BlockReference br =
+                    tr.GetObject(
+                        res.ObjectId,
+                        OpenMode.ForRead) as BlockReference;
+
                 if (br == null)
                 {
                     ed.WriteMessage("\nЭто не блок.");
                     return null;
                 }
+
                 string layer = br.Layer;
-                ed.WriteMessage($"\nВыбранный блок находится на слое: {layer}");
+
+                ed.WriteMessage(
+                    $"\nВыбранный блок находится на слое: {layer}");
+
                 return layer;
             }
         }
 
         /// <summary>
-        /// Основная операция: применить масштабный коэффициент к выбранным объектам.
+        /// Основная операция изменения масштаба.
+        ///
+        /// Dimension:
+        ///     .NET API + Transaction
+        ///
+        /// MLeader:
+        ///     .NET API + Transaction
+        ///
+        /// BlockReference:
+        ///     COM API через AcadObject
+        ///
+        /// scaleFactor является АБСОЛЮТНЫМ масштабом.
+        /// Например:
+        ///     100  → X=100, Y=100, Z=100
+        ///     0.5  → X=0.5, Y=0.5, Z=0.5
         /// </summary>
-        /// <param name="scaleFactor">Масштабный коэффициент.</param>
-        /// <param name="blockLayer">Слой, на котором должны находиться блоки.</param>
-        /// <param name="applyToDimensions">Обрабатывать размеры (Dimscale).</param>
-        /// <param name="applyToMLeaders">Обрабатывать мультивыноски (Scale).</param>
-        /// <param name="applyToBlocks">Обрабатывать блоки на заданном слое.</param>
-        /// <param name="preselectedIds">
-        /// Объекты, заранее выбранные пользователем до открытия формы.
-        /// Если null или пусто — используется Pickfirst / интерактивный выбор.
-        /// </param>
         public static void Run(
             double scaleFactor,
             string blockLayer,
@@ -74,133 +109,257 @@ namespace ScalePlugin
             bool applyToBlocks,
             ObjectId[] preselectedIds = null)
         {
-            Document doc = AcAp.DocumentManager.MdiActiveDocument;
+            Document doc =
+                AcAp.DocumentManager.MdiActiveDocument;
+
             Editor ed = doc.Editor;
             Database db = doc.Database;
 
             if (string.IsNullOrEmpty(blockLayer))
                 blockLayer = "1ЭП_Оформление";
 
-            // 1. Получаем набор объектов:
-            //    а) заранее переданный из формы (Pickfirst, зафиксированный до показа формы);
-            //    б) текущий Pickfirst;
-            //    в) интерактивный выбор.
+            // =====================================================
+            // 1. Получаем набор объектов
+            // =====================================================
+
             ObjectId[] ids = preselectedIds;
 
             if (ids == null || ids.Length == 0)
             {
-                PromptSelectionResult sel = ed.SelectImplied();
-                if (sel.Status == PromptStatus.OK && sel.Value != null && sel.Value.Count > 0)
+                PromptSelectionResult sel =
+                    ed.SelectImplied();
+
+                if (sel.Status == PromptStatus.OK &&
+                    sel.Value != null &&
+                    sel.Value.Count > 0)
                 {
                     ids = sel.Value.GetObjectIds();
                 }
                 else
                 {
-                    PromptSelectionOptions pso = new PromptSelectionOptions();
-                    pso.MessageForAdding = "\nВыберите объекты для обработки: ";
+                    PromptSelectionOptions pso =
+                        new PromptSelectionOptions();
+
+                    pso.MessageForAdding =
+                        "\nВыберите объекты для обработки: ";
+
                     sel = ed.GetSelection(pso);
 
-                    if (sel.Status != PromptStatus.OK || sel.Value == null || sel.Value.Count == 0)
+                    if (sel.Status != PromptStatus.OK ||
+                        sel.Value == null ||
+                        sel.Value.Count == 0)
                     {
-                        ed.WriteMessage("\nНет выбранных объектов.");
+                        ed.WriteMessage(
+                            "\nНет выбранных объектов.");
+
                         return;
                     }
+
                     ids = sel.Value.GetObjectIds();
                 }
             }
 
             int count = 0;
 
+            // =====================================================
+            // 2. Блокируем документ
+            // =====================================================
+
             using (doc.LockDocument())
-            using (Transaction tr = db.TransactionManager.StartTransaction())
             {
-                foreach (ObjectId id in ids)
+                // =================================================
+                // 3. Обработка Dimension и MLeader через .NET
+                //
+                // BlockReference здесь НЕ изменяем.
+                // =================================================
+
+                if (applyToDimensions || applyToMLeaders)
                 {
-                    if (id.IsNull || id.IsErased) continue;
-
-                    Entity ent = tr.GetObject(id, OpenMode.ForWrite) as Entity;
-                    if (ent == null) continue;
-
-                    if (ent is Dimension dim)
+                    using (Transaction tr =
+                           db.TransactionManager.StartTransaction())
                     {
-                        if (!applyToDimensions) continue;
-                        dim.Dimscale = scaleFactor;
-                        count++;
-                    }
-                    else if (ent is MLeader mld)
-                    {
-                        if (!applyToMLeaders) continue;
-                        mld.Scale = scaleFactor;
-                        count++;
-                    }
-// =============================================================
-// БЛОКИ — здесь используется COM API AutoCAD.
-//
-// В .NET API изменение:
-//     br.ScaleFactors = new Scale3d(...)
-// корректно изменяет графическую часть блока, но для
-// AttributeReference результат отличается от изменения
-// масштаба блока вручную через Properties.
-//
-// В старой рабочей версии VBA использовались:
-//     XScaleFactor
-//     YScaleFactor
-//     ZScaleFactor
-// через AutoCAD COM/ActiveX API.
-//
-// COM-вариант корректно обрабатывает блок вместе с его
-// атрибутами, поэтому для BlockReference намеренно
-// используется COM, а не .NET ScaleFactors.
-//
-// scaleFactor здесь является АБСОЛЮТНЫМ масштабом блока,
-// а не коэффициентом умножения.
-// =============================================================
-                    else if (ent is BlockReference br)
-                    {
-                        if (!applyToBlocks)
-                            continue;
-
-                        if (string.Equals(
-                                br.Layer,
-                                blockLayer,
-                                StringComparison.OrdinalIgnoreCase))
+                        foreach (ObjectId id in ids)
                         {
-                            object comBr = br.AcadObject;
+                            if (id.IsNull || id.IsErased)
+                                continue;
 
-                            comBr.GetType().InvokeMember(
-                                "XScaleFactor",
-                                System.Reflection.BindingFlags.SetProperty,
-                                null,
-                                comBr,
-                                new object[] { scaleFactor });
+                            Entity ent =
+                                tr.GetObject(
+                                    id,
+                                    OpenMode.ForWrite) as Entity;
 
-                            comBr.GetType().InvokeMember(
-                                "YScaleFactor",
-                                System.Reflection.BindingFlags.SetProperty,
-                                null,
-                                comBr,
-                                new object[] { scaleFactor });
+                            if (ent == null)
+                                continue;
 
-                            comBr.GetType().InvokeMember(
-                                "ZScaleFactor",
-                                System.Reflection.BindingFlags.SetProperty,
-                                null,
-                                comBr,
-                                new object[] { scaleFactor });
+                            // -----------------------------------------
+                            // Размер
+                            // -----------------------------------------
 
-                            br.RecordGraphicsModified(true);
+                            if (ent is Dimension dim)
+                            {
+                                if (!applyToDimensions)
+                                    continue;
 
-                            count++;
+                                dim.Dimscale = scaleFactor;
+
+                                count++;
+
+                                continue;
+                            }
+
+                            // -----------------------------------------
+                            // Мультивыноска
+                            // -----------------------------------------
+
+                            if (ent is MLeader mld)
+                            {
+                                if (!applyToMLeaders)
+                                    continue;
+
+                                mld.Scale = scaleFactor;
+
+                                count++;
+
+                                continue;
+                            }
                         }
+
+                        tr.Commit();
                     }
                 }
 
-                tr.Commit();
+                // =================================================
+                // 4. Получаем BlockReference через .NET
+                //
+                // Здесь мы НЕ изменяем блок.
+                //
+                // Нам нужно только получить:
+                //     ObjectId
+                //     Layer
+                //
+                // и передать сам BlockReference дальше,
+                // чтобы получить его AcadObject.
+                // =================================================
+
+                List<BlockReference> blocks =
+                    new List<BlockReference>();
+
+                if (applyToBlocks)
+                {
+                    using (Transaction tr =
+                           db.TransactionManager.StartTransaction())
+                    {
+                        foreach (ObjectId id in ids)
+                        {
+                            if (id.IsNull || id.IsErased)
+                                continue;
+
+                            BlockReference br =
+                                tr.GetObject(
+                                    id,
+                                    OpenMode.ForRead) as BlockReference;
+
+                            if (br == null)
+                                continue;
+
+                            if (!string.Equals(
+                                    br.Layer,
+                                    blockLayer,
+                                    StringComparison.OrdinalIgnoreCase))
+                            {
+                                continue;
+                            }
+
+                            blocks.Add(br);
+                        }
+
+                        tr.Commit();
+                    }
+                }
+
+                // =================================================
+                // 5. Блоки — COM API
+                //
+                // Здесь уже нет активной .NET Transaction.
+                //
+                // Используем:
+                //
+                //     br.AcadObject
+                //
+                // вместо:
+                //
+                //     ObjectIDToObject
+                //
+                // поэтому OldId / OldIdPtr вообще не нужны.
+                // =================================================
+
+                if (applyToBlocks)
+                {
+                    foreach (BlockReference br in blocks)
+                    {
+                        object comBr = br.AcadObject;
+
+                        if (comBr == null)
+                            continue;
+
+                        Type comType =
+                            comBr.GetType();
+
+                        // -----------------------------------------
+                        // Абсолютный масштаб блока.
+                        //
+                        // Аналог VBA:
+                        //
+                        // entity.XScaleFactor = myScaleFactor
+                        // entity.YScaleFactor = myScaleFactor
+                        // entity.ZScaleFactor = myScaleFactor
+                        // -----------------------------------------
+
+                        comType.InvokeMember(
+                            "XScaleFactor",
+                            BindingFlags.SetProperty,
+                            null,
+                            comBr,
+                            new object[]
+                            {
+                                scaleFactor
+                            });
+
+                        comType.InvokeMember(
+                            "YScaleFactor",
+                            BindingFlags.SetProperty,
+                            null,
+                            comBr,
+                            new object[]
+                            {
+                                scaleFactor
+                            });
+
+                        comType.InvokeMember(
+                            "ZScaleFactor",
+                            BindingFlags.SetProperty,
+                            null,
+                            comBr,
+                            new object[]
+                            {
+                                scaleFactor
+                            });
+
+                        count++;
+                    }
+                }
             }
 
-            // Снимаем Pickfirst (уже неактуален).
-            ed.SetImpliedSelection(new ObjectId[0]);
-            ed.WriteMessage($"\nОбработано объектов: {count}");
+            // =====================================================
+            // 6. Завершение
+            // =====================================================
+
+            ed.SetImpliedSelection(
+                new ObjectId[0]);
+
+            ed.WriteMessage(
+                $"\nОбработано объектов: {count}");
+
             ed.Regen();
         }
     }
