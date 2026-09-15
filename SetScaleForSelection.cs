@@ -1,7 +1,7 @@
 ﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
-using Autodesk.AutoCAD.Geometry;
+using Autodesk.AutoCAD.Geometry; // .NET API, в дальнейшем поменял на COM API для корректного изменения масштаба блоков с атрибутами
 using System;
 using System.Globalization;
 using AcAp = Autodesk.AutoCAD.ApplicationServices.Application;
@@ -133,14 +133,63 @@ namespace ScalePlugin
                         mld.Scale = scaleFactor;
                         count++;
                     }
+// =============================================================
+// БЛОКИ — здесь используется COM API AutoCAD.
+//
+// В .NET API изменение:
+//     br.ScaleFactors = new Scale3d(...)
+// корректно изменяет графическую часть блока, но для
+// AttributeReference результат отличается от изменения
+// масштаба блока вручную через Properties.
+//
+// В старой рабочей версии VBA использовались:
+//     XScaleFactor
+//     YScaleFactor
+//     ZScaleFactor
+// через AutoCAD COM/ActiveX API.
+//
+// COM-вариант корректно обрабатывает блок вместе с его
+// атрибутами, поэтому для BlockReference намеренно
+// используется COM, а не .NET ScaleFactors.
+//
+// scaleFactor здесь является АБСОЛЮТНЫМ масштабом блока,
+// а не коэффициентом умножения.
+// =============================================================
                     else if (ent is BlockReference br)
                     {
-                        if (!applyToBlocks) continue;
+                        if (!applyToBlocks)
+                            continue;
 
-                        if (string.Equals(br.Layer, blockLayer,
+                        if (string.Equals(
+                                br.Layer,
+                                blockLayer,
                                 StringComparison.OrdinalIgnoreCase))
                         {
-                            br.ScaleFactors = new Scale3d(scaleFactor, scaleFactor, scaleFactor);
+                            object comBr = br.AcadObject;
+
+                            comBr.GetType().InvokeMember(
+                                "XScaleFactor",
+                                System.Reflection.BindingFlags.SetProperty,
+                                null,
+                                comBr,
+                                new object[] { scaleFactor });
+
+                            comBr.GetType().InvokeMember(
+                                "YScaleFactor",
+                                System.Reflection.BindingFlags.SetProperty,
+                                null,
+                                comBr,
+                                new object[] { scaleFactor });
+
+                            comBr.GetType().InvokeMember(
+                                "ZScaleFactor",
+                                System.Reflection.BindingFlags.SetProperty,
+                                null,
+                                comBr,
+                                new object[] { scaleFactor });
+
+                            br.RecordGraphicsModified(true);
+
                             count++;
                         }
                     }
