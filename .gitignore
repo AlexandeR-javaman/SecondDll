@@ -1,3 +1,5 @@
+bin/
+obj/
 bin/Debug/net47/Test.dll
 bin/Debug/net47/Test.pdb
 obj/project.assets.json
